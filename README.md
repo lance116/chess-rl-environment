@@ -2,8 +2,6 @@
 
 A Python-based chess game featuring an AI opponent powered by neural networks. This project combines traditional chess gameplay with modern machine learning techniques, providing an engaging chess experience with a computer opponent that learns and improves over time.
 
-![Chess Game Screenshot](assets/images/screenshot.png)
-
 ## Features
 
 - **Interactive Chess Gameplay**: Full-featured chess game with intuitive GUI
