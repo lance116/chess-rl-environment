@@ -1,4 +1,4 @@
-tensorflow==2.12.0
+tensorflow>=2.13.0
 pygame>=2.5.0
 python-chess>=1.999
 numpy>=1.21.0
