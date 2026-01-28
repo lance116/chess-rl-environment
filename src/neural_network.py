@@ -93,20 +93,27 @@ def board_to_bitboard(board: chess.Board) -> np.ndarray:
     """
     Convert python-chess Board to neural network input tensor.
 
-    Creates 8×8×13 tensor:
+    Creates 8×8×19 tensor (enhanced representation):
     - Planes 0-5: White pieces (P, N, B, R, Q, K)
     - Planes 6-11: Black pieces (P, N, B, R, Q, K)
     - Plane 12: Turn indicator (1.0 = White's turn, 0.0 = Black's turn)
+    - Plane 13: Kingside castling rights (white OR black has rights)
+    - Plane 14: Queenside castling rights (white OR black has rights)
+    - Plane 15: En passant square (1.0 at en passant target)
+    - Plane 16: Halfmove clock (normalized 0-1, capped at 100)
+    - Plane 17: Repetition indicator (1.0 if position repeated)
+    - Plane 18: Check indicator (1.0 if current side is in check)
 
     Args:
         board: python-chess Board object
 
     Returns:
-        NumPy array of shape (1, 8, 8, 13) ready for model.predict()
+        NumPy array of shape (1, 8, 8, 19) ready for model.predict()
     """
     bitboard = np.zeros(INPUT_SHAPE, dtype=np.float32)
     plane_index = 0
 
+    # Planes 0-11: Piece positions
     for color in [chess.WHITE, chess.BLACK]:
         for piece_type in [chess.PAWN, chess.KNIGHT, chess.BISHOP,
                           chess.ROOK, chess.QUEEN, chess.KING]:
@@ -116,8 +123,35 @@ def board_to_bitboard(board: chess.Board) -> np.ndarray:
                 bitboard[row, col, plane_index] = 1.0
             plane_index += 1
 
-    # Turn indicator
+    # Plane 12: Turn indicator
     bitboard[:, :, 12] = 1.0 if board.turn == chess.WHITE else 0.0
+
+    # Plane 13: Kingside castling rights
+    has_kingside = (board.has_kingside_castling_rights(chess.WHITE) or
+                    board.has_kingside_castling_rights(chess.BLACK))
+    bitboard[:, :, 13] = 1.0 if has_kingside else 0.0
+
+    # Plane 14: Queenside castling rights
+    has_queenside = (board.has_queenside_castling_rights(chess.WHITE) or
+                     board.has_queenside_castling_rights(chess.BLACK))
+    bitboard[:, :, 14] = 1.0 if has_queenside else 0.0
+
+    # Plane 15: En passant square
+    if board.ep_square is not None:
+        row = 7 - (board.ep_square // 8)
+        col = board.ep_square % 8
+        bitboard[row, col, 15] = 1.0
+
+    # Plane 16: Halfmove clock (normalized, important for 50-move rule)
+    halfmove_normalized = min(board.halfmove_clock / 100.0, 1.0)
+    bitboard[:, :, 16] = halfmove_normalized
+
+    # Plane 17: Repetition indicator
+    is_repetition = board.is_repetition(2)  # True if position occurred 2+ times
+    bitboard[:, :, 17] = 1.0 if is_repetition else 0.0
+
+    # Plane 18: Check indicator
+    bitboard[:, :, 18] = 1.0 if board.is_check() else 0.0
 
     return np.expand_dims(bitboard, axis=0)
 

@@ -119,7 +119,15 @@ POSITION_SCORES = {
 # Neural network settings
 N_PIECE_TYPES = 6
 N_COLORS = 2
-N_PLANES = N_PIECE_TYPES * N_COLORS + 1  # 12 piece planes + 1 turn plane
+# Enhanced board representation: 19 planes
+# - 12 piece planes (6 types x 2 colors)
+# - 1 turn indicator
+# - 2 castling rights (kingside, queenside)
+# - 1 en passant
+# - 1 halfmove clock (normalized)
+# - 1 repetition indicator
+# - 1 check indicator
+N_PLANES = 19
 INPUT_SHAPE = (BOARD_SIZE, BOARD_SIZE, N_PLANES)
 
 # Training settings
