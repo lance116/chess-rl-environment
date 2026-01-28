@@ -1,4 +1,9 @@
+# Core dependencies
 tensorflow>=2.13.0
+tensorflow-metal>=1.0.0  # Apple Silicon GPU acceleration
 pygame>=2.5.0
 python-chess>=1.999
 numpy>=1.21.0
+
+# RL Training dependencies
+tqdm>=4.65.0  # Progress bars for training
