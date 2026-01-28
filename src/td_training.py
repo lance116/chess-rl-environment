@@ -27,6 +27,7 @@ try:
     from .neural_network import build_model, board_to_bitboard
     from .replay_buffer import ReplayBuffer
     from .self_play import SelfPlayEngine, games_to_training_data
+    from .evaluation import EloEstimator
 except ImportError:
     from config import (
         RL_LAMBDA, RL_GAMMA, RL_LEARNING_RATE, RL_BATCH_SIZE,
@@ -37,6 +38,73 @@ except ImportError:
     from neural_network import build_model, board_to_bitboard
     from replay_buffer import ReplayBuffer
     from self_play import SelfPlayEngine, games_to_training_data
+    from evaluation import EloEstimator
+
+
+class LearningRateScheduler:
+    """
+    Learning rate scheduler with warmup and decay.
+
+    Schedule:
+    1. Warmup phase: Linear increase from 0 to initial LR
+    2. Stable phase: Constant learning rate
+    3. Decay phase: Exponential decay
+    """
+
+    def __init__(self, initial_lr: float = RL_LEARNING_RATE,
+                 warmup_iterations: int = 5,
+                 decay_start: int = 50,
+                 decay_factor: float = 0.95,
+                 min_lr: float = 1e-6):
+        self.initial_lr = initial_lr
+        self.warmup_iterations = warmup_iterations
+        self.decay_start = decay_start
+        self.decay_factor = decay_factor
+        self.min_lr = min_lr
+
+    def get_lr(self, iteration: int) -> float:
+        """Get learning rate for given iteration."""
+        if iteration < self.warmup_iterations:
+            # Warmup: linear increase
+            return self.initial_lr * (iteration + 1) / self.warmup_iterations
+        elif iteration < self.decay_start:
+            # Stable phase
+            return self.initial_lr
+        else:
+            # Decay phase
+            decay_steps = iteration - self.decay_start
+            lr = self.initial_lr * (self.decay_factor ** decay_steps)
+            return max(lr, self.min_lr)
+
+
+class OpponentPool:
+    """
+    Pool of previous model checkpoints for diverse self-play.
+
+    Playing against previous versions prevents overfitting to
+    the current model's weaknesses.
+    """
+
+    def __init__(self, max_opponents: int = 5):
+        self.max_opponents = max_opponents
+        self.opponents: List[str] = []  # Checkpoint paths
+
+    def add(self, checkpoint_path: str):
+        """Add a checkpoint to the pool."""
+        if checkpoint_path not in self.opponents:
+            self.opponents.append(checkpoint_path)
+            # Keep only recent opponents
+            if len(self.opponents) > self.max_opponents:
+                self.opponents.pop(0)
+
+    def sample(self) -> Optional[str]:
+        """Sample a random opponent from the pool."""
+        if not self.opponents:
+            return None
+        return np.random.choice(self.opponents)
+
+    def __len__(self) -> int:
+        return len(self.opponents)
 
 
 class TDLambdaTrainer:
@@ -48,12 +116,19 @@ class TDLambdaTrainer:
     2. Add positions to replay buffer
     3. Sample batches and perform gradient updates
     4. Periodically evaluate and checkpoint
+
+    Enhancements:
+    - Learning rate scheduling with warmup and decay
+    - Opponent pool for diverse self-play
+    - Automatic Elo evaluation
     """
 
     def __init__(self, model: Optional[keras.Model] = None,
                  learning_rate: float = RL_LEARNING_RATE,
                  lambda_param: float = RL_LAMBDA,
-                 gamma: float = RL_GAMMA):
+                 gamma: float = RL_GAMMA,
+                 use_lr_scheduler: bool = True,
+                 use_opponent_pool: bool = True):
         """
         Initialize TD-Lambda trainer.
 
@@ -62,6 +137,8 @@ class TDLambdaTrainer:
             learning_rate: Learning rate for gradient updates
             lambda_param: TD-Lambda trace decay
             gamma: Discount factor
+            use_lr_scheduler: Enable learning rate scheduling
+            use_opponent_pool: Enable opponent pool for self-play
         """
         self.model = model if model is not None else build_model(INPUT_SHAPE)
         self.learning_rate = learning_rate
@@ -80,11 +157,16 @@ class TDLambdaTrainer:
             model=self.model, use_nn=True
         )
 
+        # Training enhancements
+        self.lr_scheduler = LearningRateScheduler(learning_rate) if use_lr_scheduler else None
+        self.opponent_pool = OpponentPool() if use_opponent_pool else None
+
         # Training state
         self.iteration = 0
         self.total_games = 0
         self.total_positions = 0
         self.best_loss = float('inf')
+        self.best_elo = 0
 
         # Training log
         self.training_log: List[Dict] = []
@@ -152,6 +234,14 @@ class TDLambdaTrainer:
             return loss[0]
         return loss
 
+    def update_learning_rate(self):
+        """Update learning rate based on scheduler."""
+        if self.lr_scheduler is not None:
+            new_lr = self.lr_scheduler.get_lr(self.iteration)
+            self.optimizer.learning_rate.assign(new_lr)
+            return new_lr
+        return self.learning_rate
+
     def train_iteration(self, num_updates: int = RL_UPDATES_PER_ITERATION,
                         batch_size: int = RL_BATCH_SIZE,
                         verbose: bool = True) -> Dict:
@@ -170,6 +260,9 @@ class TDLambdaTrainer:
             if verbose:
                 print(f"Buffer not ready ({len(self.replay_buffer)}/{RL_REPLAY_MIN_SIZE})")
             return {'loss': 0.0, 'skipped': True}
+
+        # Update learning rate
+        current_lr = self.update_learning_rate()
 
         losses = []
         start_time = time.time()
@@ -191,6 +284,7 @@ class TDLambdaTrainer:
             'updates': num_updates,
             'train_time': train_time,
             'buffer_size': len(self.replay_buffer),
+            'learning_rate': current_lr,
         }
 
         if verbose:
@@ -202,6 +296,7 @@ class TDLambdaTrainer:
                      games_per_iter: int = RL_GAMES_PER_ITERATION,
                      updates_per_iter: int = RL_UPDATES_PER_ITERATION,
                      checkpoint_interval: int = RL_CHECKPOINT_INTERVAL,
+                     eval_interval: int = 0,
                      verbose: bool = True) -> List[Dict]:
         """
         Run full TD-Lambda training loop.
@@ -211,6 +306,7 @@ class TDLambdaTrainer:
             games_per_iter: Self-play games per iteration
             updates_per_iter: Gradient updates per iteration
             checkpoint_interval: Iterations between checkpoints
+            eval_interval: Iterations between Elo evaluations (0 = disabled)
             verbose: Whether to print progress
 
         Returns:
@@ -255,12 +351,27 @@ class TDLambdaTrainer:
 
             # Checkpoint
             if self.iteration % checkpoint_interval == 0:
-                self.save_checkpoint()
+                checkpoint_path = self.save_checkpoint()
+
+                # Add to opponent pool for diverse self-play
+                if self.opponent_pool is not None and checkpoint_path:
+                    self.opponent_pool.add(checkpoint_path)
+                    if verbose:
+                        print(f"Opponent pool size: {len(self.opponent_pool)}")
 
                 # Save if best loss
                 if metrics['loss'] < self.best_loss:
                     self.best_loss = metrics['loss']
                     self.save_best_model()
+
+            # Periodic Elo evaluation
+            if eval_interval > 0 and self.iteration % eval_interval == 0:
+                elo = self.evaluate_elo(verbose=verbose)
+                metrics['elo'] = elo
+                if elo > self.best_elo:
+                    self.best_elo = elo
+                    if verbose:
+                        print(f"New best Elo: {elo:.0f}")
 
             iter_time = time.time() - iter_start
             print(f"\nIteration time: {iter_time:.1f}s")
@@ -283,8 +394,34 @@ class TDLambdaTrainer:
 
         return all_metrics
 
-    def save_checkpoint(self, suffix: str = None):
-        """Save model checkpoint."""
+    def evaluate_elo(self, num_games: int = 5, verbose: bool = True) -> float:
+        """
+        Evaluate current model's Elo rating.
+
+        Args:
+            num_games: Games per skill level
+            verbose: Print progress
+
+        Returns:
+            Estimated Elo rating
+        """
+        if verbose:
+            print("\nEvaluating Elo rating...")
+
+        try:
+            estimator = EloEstimator(model=self.model)
+            elo = estimator.quick_estimate(verbose=verbose)
+            return elo
+        except Exception as e:
+            print(f"Elo evaluation failed: {e}")
+            return 0.0
+
+    def save_checkpoint(self, suffix: str = None) -> str:
+        """Save model checkpoint.
+
+        Returns:
+            Path to saved checkpoint
+        """
         if suffix is None:
             suffix = f"iter_{self.iteration:04d}"
 
@@ -294,6 +431,8 @@ class TDLambdaTrainer:
 
         # Also save replay buffer
         self.replay_buffer.save()
+
+        return path
 
     def save_best_model(self):
         """Save best model."""

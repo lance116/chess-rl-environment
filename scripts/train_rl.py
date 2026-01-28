@@ -55,6 +55,8 @@ def parse_args():
 
     parser.add_argument('--no-gpu', action='store_true',
                         help='Disable GPU acceleration')
+    parser.add_argument('--eval-interval', type=int, default=0,
+                        help='Iterations between Elo evaluations (0=disabled)')
 
     return parser.parse_args()
 
@@ -197,7 +199,8 @@ def main():
             num_iterations=args.iterations,
             games_per_iter=args.games,
             updates_per_iter=args.updates,
-            checkpoint_interval=args.checkpoint_interval
+            checkpoint_interval=args.checkpoint_interval,
+            eval_interval=args.eval_interval
         )
 
         print("\n" + "=" * 60)
