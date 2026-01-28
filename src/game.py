@@ -38,12 +38,13 @@ except ImportError:
 class ChessGame:
     """Main chess game controller."""
 
-    def __init__(self, use_neural_network: bool = False):
+    def __init__(self, use_neural_network: bool = False, model_path: str = None):
         """
         Initialize the chess game.
 
         Args:
             use_neural_network: Whether to use neural network for AI evaluation
+            model_path: Path to model weights (None = use default)
         """
         pygame.init()
         pygame.mixer.init()
@@ -74,15 +75,21 @@ class ChessGame:
         # Neural network setup
         self.use_neural_network = use_neural_network
         self.nn_model = None
+        self.model_path = model_path
         if use_neural_network:
             try:
-                try:
-                    from .config import MODEL_WEIGHTS_FILE
-                except ImportError:
-                    from config import MODEL_WEIGHTS_FILE
-                self.nn_model = load_model(MODEL_WEIGHTS_FILE)
+                # Use provided path or fall back to default
+                if model_path is None:
+                    try:
+                        from .config import MODEL_WEIGHTS_FILE
+                    except ImportError:
+                        from config import MODEL_WEIGHTS_FILE
+                    model_path = MODEL_WEIGHTS_FILE
+
+                self.nn_model = load_model(model_path)
                 if self.nn_model is not None:
-                    print("Neural network evaluation enabled")
+                    print(f"Neural network evaluation enabled")
+                    print(f"Loaded model: {model_path}")
                 else:
                     print("Neural network model is None, falling back to classical")
                     self.use_neural_network = False
