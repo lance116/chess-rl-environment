@@ -38,54 +38,120 @@ except ImportError:
     )
 
 
-def build_model(input_shape: Tuple[int, int, int]) -> keras.Model:
+def residual_block(x, filters: int, kernel_size: int = 3):
     """
-    Build the chess evaluation neural network.
+    Create a residual block with skip connection.
 
-    IMPROVEMENTS FROM ORIGINAL:
-    - Stronger regularization (L2=0.005 from 0.003)
-    - More dropout (0.5 from 0.4)
-    - Batch normalization after each layer
-    - Reduced model capacity to prevent memorization
+    Architecture:
+        Input -> Conv -> BN -> ReLU -> Conv -> BN -> Add(Input) -> ReLU
 
     Args:
-        input_shape: Shape of input tensor (8, 8, 13)
+        x: Input tensor
+        filters: Number of convolutional filters
+        kernel_size: Convolution kernel size
 
     Returns:
-        Compiled Keras model
+        Output tensor with skip connection
+    """
+    shortcut = x
+
+    # First convolution
+    x = layers.Conv2D(filters, kernel_size, padding='same', use_bias=False,
+                      kernel_regularizer=regularizers.l2(0.0001))(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+
+    # Second convolution
+    x = layers.Conv2D(filters, kernel_size, padding='same', use_bias=False,
+                      kernel_regularizer=regularizers.l2(0.0001))(x)
+    x = layers.BatchNormalization()(x)
+
+    # Skip connection
+    x = layers.Add()([shortcut, x])
+    x = layers.ReLU()(x)
+
+    return x
+
+
+def build_model(input_shape: Tuple[int, int, int], num_residual_blocks: int = 5,
+                num_filters: int = 128) -> keras.Model:
+    """
+    Build a residual neural network for chess position evaluation.
+
+    Architecture inspired by AlphaZero but scaled for practical training:
+    - Initial convolution to expand channels
+    - Stack of residual blocks with skip connections
+    - Value head with tanh activation for [-1, 1] output
+
+    Args:
+        input_shape: Shape of input tensor (8, 8, 19)
+        num_residual_blocks: Number of residual blocks (default: 5)
+        num_filters: Number of filters per conv layer (default: 128)
+
+    Returns:
+        Compiled Keras model outputting position evaluation in [-1, 1]
+    """
+    inputs = keras.Input(shape=input_shape)
+
+    # Initial convolution to expand channels
+    x = layers.Conv2D(num_filters, 3, padding='same', use_bias=False,
+                      kernel_regularizer=regularizers.l2(0.0001))(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+
+    # Residual tower
+    for _ in range(num_residual_blocks):
+        x = residual_block(x, num_filters)
+
+    # Value head
+    v = layers.Conv2D(1, 1, use_bias=False,
+                      kernel_regularizer=regularizers.l2(0.0001))(x)
+    v = layers.BatchNormalization()(v)
+    v = layers.ReLU()(v)
+    v = layers.Flatten()(v)
+    v = layers.Dense(256, activation='relu',
+                     kernel_regularizer=regularizers.l2(0.0001))(v)
+    v = layers.Dropout(0.3)(v)
+
+    # Output: evaluation in [-1, 1] (tanh)
+    # -1 = Black winning, 0 = Equal, +1 = White winning
+    value_output = layers.Dense(1, activation='tanh', name='value')(v)
+
+    model = keras.Model(inputs=inputs, outputs=value_output)
+
+    # Compile with MSE loss (appropriate for value regression)
+    optimizer = keras.optimizers.Adam(learning_rate=0.001)
+    model.compile(optimizer=optimizer, loss='mse', metrics=['mae'])
+
+    return model
+
+
+def build_model_legacy(input_shape: Tuple[int, int, int]) -> keras.Model:
+    """
+    Legacy model architecture for backward compatibility.
+    Use build_model() for new training.
     """
     model = keras.Sequential([
         keras.Input(shape=input_shape),
-
-        # Convolutional layers for spatial pattern recognition
         layers.Conv2D(64, kernel_size=(3, 3), activation="relu", padding="same",
                       kernel_regularizer=regularizers.l2(0.005)),
         layers.BatchNormalization(),
-        layers.Dropout(0.3),  # Add dropout after conv layers
-
+        layers.Dropout(0.3),
         layers.Conv2D(128, kernel_size=(3, 3), activation="relu", padding="same",
                       kernel_regularizer=regularizers.l2(0.005)),
         layers.BatchNormalization(),
         layers.Dropout(0.3),
-
-        # Dense layers for evaluation
         layers.Flatten(),
         layers.Dense(128, activation="relu", kernel_regularizer=regularizers.l2(0.005)),
         layers.BatchNormalization(),
         layers.Dropout(0.5),
-
         layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l2(0.005)),
         layers.BatchNormalization(),
         layers.Dropout(0.5),
-
-        # Output: win probability for white [0, 1]
         layers.Dense(1, activation="sigmoid")
     ])
-
-    # Use lower learning rate for more stable training
     optimizer = keras.optimizers.Adam(learning_rate=0.0005)
     model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
-
     return model
 
 
@@ -490,8 +556,13 @@ def train_model(model: keras.Model, X_train: np.ndarray, y_train: np.ndarray,
         print("\nTraining complete!")
         print(f"Final training loss: {history.history['loss'][-1]:.4f}")
         print(f"Final validation loss: {history.history['val_loss'][-1]:.4f}")
-        print(f"Final training accuracy: {history.history['accuracy'][-1]:.4f}")
-        print(f"Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
+        # Print MAE if using new model (MSE loss), else accuracy for legacy
+        if 'mae' in history.history:
+            print(f"Final training MAE: {history.history['mae'][-1]:.4f}")
+            print(f"Final validation MAE: {history.history['val_mae'][-1]:.4f}")
+        elif 'accuracy' in history.history:
+            print(f"Final training accuracy: {history.history['accuracy'][-1]:.4f}")
+            print(f"Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
 
         # Check for overfitting
         train_loss = history.history['loss'][-1]
@@ -568,8 +639,8 @@ def evaluate_position(model: keras.Model, board: chess.Board) -> float:
     board_tensor = board_to_bitboard(board)
     predicted_value = model.predict(board_tensor, verbose=0)[0][0]
 
-    # Convert probability [0, 1] to centipawn score
-    # 0.5 -> 0 (equal), 1.0 -> +600, 0.0 -> -600
-    eval_score = (predicted_value - 0.5) * 1200
+    # Convert tanh output [-1, 1] to centipawn score
+    # -1 -> -600 (Black winning), 0 -> 0 (equal), +1 -> +600 (White winning)
+    eval_score = predicted_value * 600
 
     return eval_score
