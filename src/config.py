@@ -130,7 +130,7 @@ N_COLORS = 2
 N_PLANES = 19
 INPUT_SHAPE = (BOARD_SIZE, BOARD_SIZE, N_PLANES)
 
-# Training settings
+# Supervised training settings
 import os as _os
 PGN_DATABASE_PATH = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), 'assets')
 TRAIN_MODEL_ON_START = False
@@ -139,3 +139,42 @@ TRAINING_BATCH_SIZE = 128
 TRAINING_EPOCHS = 10
 VALIDATION_SPLIT = 0.2  # Increased from 0.1
 EARLY_STOPPING_PATIENCE = 3
+
+# =============================================================================
+# Reinforcement Learning Settings (TD-Lambda)
+# =============================================================================
+
+# TD-Lambda hyperparameters
+RL_LAMBDA = 0.7              # TD-Lambda trace decay (0=TD(0), 1=Monte Carlo)
+RL_GAMMA = 1.0               # Discount factor (1.0 for episodic chess games)
+RL_LEARNING_RATE = 0.0001    # Lower than supervised for stable RL updates
+
+# Training loop settings
+RL_BATCH_SIZE = 64           # Batch size for RL training updates
+RL_GAMES_PER_ITERATION = 50  # Self-play games per training iteration
+RL_TRAINING_ITERATIONS = 100 # Total training iterations
+RL_UPDATES_PER_ITERATION = 100  # Gradient updates per iteration
+
+# Self-play settings
+RL_MINIMAX_DEPTH = 3         # Fixed depth for training games (faster)
+RL_MINIMAX_TIME = 1.0        # Time limit per move during self-play (seconds)
+RL_TEMPERATURE = 1.0         # Move selection temperature (higher = more exploration)
+RL_TEMPERATURE_THRESHOLD = 30  # Moves before switching to greedy (temperature=0)
+
+# Experience replay buffer
+RL_REPLAY_BUFFER_SIZE = 100000  # Maximum positions in replay buffer
+RL_REPLAY_MIN_SIZE = 5000       # Minimum positions before training starts
+
+# Checkpointing and evaluation
+RL_CHECKPOINT_INTERVAL = 10     # Save checkpoint every N iterations
+RL_EVAL_INTERVAL = 10           # Evaluate against Stockfish every N iterations
+RL_EVAL_GAMES = 20              # Games per evaluation
+
+# Paths for RL training
+RL_CHECKPOINT_DIR = os.path.join(MODEL_DIR, 'rl_checkpoints')
+RL_BEST_MODEL_FILE = os.path.join(RL_CHECKPOINT_DIR, 'best_model.weights.h5')
+RL_TRAINING_LOG_FILE = os.path.join(RL_CHECKPOINT_DIR, 'training_log.json')
+
+# Stockfish settings for evaluation
+STOCKFISH_SKILL_LEVELS = [1, 5, 10, 15, 20]  # Skill levels for Elo estimation
+STOCKFISH_TIME_PER_MOVE = 0.1  # Seconds per move during evaluation
