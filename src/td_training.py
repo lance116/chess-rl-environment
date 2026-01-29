@@ -179,6 +179,9 @@ class TDLambdaTrainer:
         """
         Generate self-play games and add to replay buffer.
 
+        Uses opponent pool when available: 20% of games are played against
+        a previous version for training diversity.
+
         Args:
             num_games: Number of games to generate
             verbose: Whether to print progress
@@ -192,8 +195,47 @@ class TDLambdaTrainer:
         # Update self-play engine with current model
         self.self_play_engine.model = self.model
 
-        # Generate games
-        games = self.self_play_engine.play_games(num_games, verbose=verbose)
+        # Determine how many games to play against opponents from pool
+        opponent_games = 0
+        if self.opponent_pool is not None and len(self.opponent_pool) > 0:
+            opponent_games = max(1, num_games // 5)  # 20% against old versions
+            if verbose:
+                print(f"  ({opponent_games} games vs opponent pool, "
+                      f"{num_games - opponent_games} self-play)")
+
+        # Generate self-play games (current model vs itself)
+        self_play_count = num_games - opponent_games
+        games = self.self_play_engine.play_games(self_play_count, verbose=verbose)
+
+        # Generate opponent pool games
+        if opponent_games > 0:
+            opponent_path = self.opponent_pool.sample()
+            if opponent_path and os.path.exists(opponent_path):
+                try:
+                    # Build a separate model for the opponent
+                    opponent_model = build_model(INPUT_SHAPE)
+                    opponent_model.load_weights(opponent_path)
+
+                    # Create temporary engine with opponent model
+                    opponent_engine = SelfPlayEngine(
+                        model=opponent_model, use_nn=True
+                    )
+                    opponent_games_data = opponent_engine.play_games(
+                        opponent_games, verbose=False
+                    )
+                    games.extend(opponent_games_data)
+
+                    if verbose:
+                        print(f"  Played {opponent_games} games vs "
+                              f"{os.path.basename(opponent_path)}")
+                except Exception as e:
+                    if verbose:
+                        print(f"  Opponent pool game failed: {e}")
+                    # Fall back to self-play for these games
+                    extra = self.self_play_engine.play_games(
+                        opponent_games, verbose=False
+                    )
+                    games.extend(extra)
 
         # Add to replay buffer
         positions_added = 0
@@ -259,9 +301,9 @@ class TDLambdaTrainer:
         if not self.replay_buffer.is_ready(RL_REPLAY_MIN_SIZE):
             if verbose:
                 print(f"Buffer not ready ({len(self.replay_buffer)}/{RL_REPLAY_MIN_SIZE})")
-            return {'loss': 0.0, 'skipped': True}
+            return {'loss': 0.0, 'skipped': True, 'learning_rate': self.learning_rate}
 
-        # Update learning rate
+        # Update learning rate (only when actually training)
         current_lr = self.update_learning_rate()
 
         losses = []

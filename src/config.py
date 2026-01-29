@@ -131,8 +131,7 @@ N_PLANES = 19
 INPUT_SHAPE = (BOARD_SIZE, BOARD_SIZE, N_PLANES)
 
 # Supervised training settings
-import os as _os
-PGN_DATABASE_PATH = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), 'assets')
+PGN_DATABASE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'assets')
 TRAIN_MODEL_ON_START = False
 TRAINING_GAME_LIMIT = 200  # Process games per training session
 TRAINING_BATCH_SIZE = 128

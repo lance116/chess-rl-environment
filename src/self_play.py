@@ -126,14 +126,17 @@ class SelfPlayEngine:
 
     def get_move_with_eval(self, board: chess.Board, move_number: int) -> Tuple[chess.Move, float]:
         """
-        Get best move using minimax search.
+        Get move using minimax search with temperature-based exploration.
+
+        For temperature selection, evaluates top candidate moves with
+        shallow search to create a distribution for sampling.
 
         Args:
             board: Current board position
             move_number: Current move number (for temperature)
 
         Returns:
-            Tuple of (selected_move, evaluation)
+            Tuple of (selected_move, evaluation_from_white_perspective)
         """
         eval_func = self.get_eval_function()
         is_maximizing = board.turn == chess.WHITE
@@ -147,7 +150,9 @@ class SelfPlayEngine:
         # Sort moves for better alpha-beta pruning
         moves.sort(key=lambda m: score_move(board, m), reverse=True)
 
-        # Run minimax
+        # Run full-depth minimax for the best move
+        best_score = -float('inf') if is_maximizing else float('inf')
+        best_move = moves[0]
         try:
             best_score, best_move = minimax(
                 board.copy(), self.depth,
@@ -161,18 +166,33 @@ class SelfPlayEngine:
                 best_score = eval_func(board)
 
         except TimeoutError:
-            # If timeout, use first legal move
             best_move = moves[0]
             best_score = eval_func(board)
 
-        # Collect move scores for temperature selection
-        move_scores = [(best_move, best_score)]
+        # For temperature-based exploration: evaluate top candidate moves
+        # with direct evaluation to create a distribution
+        use_temperature = (move_number < self.temp_threshold
+                          and self.temperature > 0)
 
-        # For temperature selection, we could evaluate more moves
-        # But for efficiency, just use the minimax result
-        selected_move = self.select_move_with_temperature(
-            board, move_scores, move_number
-        )
+        if use_temperature and len(moves) > 1:
+            # Score top N candidate moves with direct evaluation
+            n_candidates = min(len(moves), 10)
+            move_scores = []
+            for move in moves[:n_candidates]:
+                board.push(move)
+                score = eval_func(board)
+                # Negate if we want from current player's perspective for ranking
+                if is_maximizing:
+                    move_scores.append((move, score))
+                else:
+                    move_scores.append((move, -score))
+                board.pop()
+
+            selected_move = self.select_move_with_temperature(
+                board, move_scores, move_number
+            )
+        else:
+            selected_move = best_move
 
         return selected_move, best_score
 
@@ -203,9 +223,7 @@ class SelfPlayEngine:
             if move is None:
                 break
 
-            # Store evaluation from white's perspective
-            if board.turn == chess.BLACK:
-                eval_score = -eval_score
+            # Store evaluation (already from White's perspective via minimax)
             pre_move_evals.append(eval_score)
 
             # Make move
@@ -265,18 +283,19 @@ class SelfPlayEngine:
         """
         Assign values to positions using TD-Lambda style blending.
 
-        Blends immediate evaluation with final outcome:
-        - Early positions: more weight on evaluation
-        - Late positions: more weight on outcome
+        All values are from White's perspective (consistent with network output):
+        - +1 = White winning, -1 = Black winning, 0 = equal
+        - Early positions: more weight on minimax evaluation
+        - Late positions: more weight on game outcome
 
         Args:
             positions: List of position tensors
-            evals: List of pre-move evaluations
-            outcome: Final game outcome
+            evals: List of pre-move evaluations (White's perspective)
+            outcome: Final game outcome (1.0=White, 0.0=Black, 0.5=Draw)
             lambda_decay: Decay factor for temporal difference
 
         Returns:
-            List of position values
+            List of position values (White's perspective)
         """
         n = len(positions)
         if n == 0:
@@ -287,26 +306,26 @@ class SelfPlayEngine:
         final_value = outcome * 2 - 1
 
         for i in range(n):
-            # Distance from end of game (0 = last move, 1 = second to last, etc.)
+            # Distance from end of game (large for early moves, 0 for last)
             distance_from_end = n - 1 - i
 
-            # Weight on final outcome increases as game progresses
-            # lambda_decay^distance gives weight on outcome
+            # Weight on final outcome: high near game end, low at start
+            # lambda^0 = 1.0 (last move trusts outcome fully)
+            # lambda^large ≈ 0 (early moves trust evaluation)
             outcome_weight = lambda_decay ** distance_from_end
 
-            # Blend evaluation with outcome
+            # Blend evaluation with outcome (both from White's perspective)
             eval_score = evals[i] if i < len(evals) else 0.0
 
-            # Normalize evaluation to [-1, 1] range (assuming centipawn scale)
-            eval_normalized = np.clip(eval_score / 600.0, -1.0, 1.0)
+            # Normalize evaluation to [-1, 1] using tanh-like soft clipping
+            # This preserves more information than hard clipping at ±600
+            eval_normalized = np.tanh(eval_score / 600.0)
 
-            # Blend
+            # Blend: early positions trust eval, late positions trust outcome
             value = (1 - outcome_weight) * eval_normalized + outcome_weight * final_value
 
-            # Adjust for side to move (position i is before move i)
-            # Even indices = white to move, odd = black to move
-            if i % 2 == 1:  # Black's perspective
-                value = -value
+            # No perspective flip needed - everything is from White's perspective
+            # The network learns: input(board_with_turn) → value(White's POV)
 
             values.append(float(value))
 
