@@ -17,7 +17,7 @@ setup(
     description="A Python-based chess game featuring an AI opponent powered by neural networks",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/lance116/Chess-Neural-Network",
+    url="https://github.com/lance116/chess-rl-environment",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -36,7 +36,7 @@ setup(
     install_requires=requirements,
     entry_points={
         "console_scripts": [
-            "chess-neural-network=src.chess_game:main",
+            "chess-neural-network=src.main:main",
         ],
     },
     include_package_data=True,
